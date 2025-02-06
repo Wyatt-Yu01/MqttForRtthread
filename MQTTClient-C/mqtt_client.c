@@ -41,12 +41,12 @@
 /*********************************************************************************************************
 **  ��������
 *********************************************************************************************************/
-#define DBG_ENABLE
+//#define DBG_ENABLE
 #define DBG_SECTION_NAME    "mqtt"
 
-#define MQTT_DEBUG
+//#define MQTT_DEBUG
 #ifdef MQTT_DEBUG
-#define DBG_LEVEL           DBG_WARNING
+#define DBG_LEVEL           DBG_LOG
 #else
 #define DBG_LEVEL           DBG_INFO
 #endif /* MQTT_DEBUG */
@@ -254,6 +254,7 @@ static int mqtt_open_tls(mqtt_client *c)
   return RT_EOK;
 }
 #endif
+
 
 /*********************************************************************************************************
 ** Function name:       net_connect
@@ -1056,6 +1057,32 @@ __cycle_exit:
   return rc;
 }
 
+static rt_bool_t mqtt_prase_server(mqtt_client *c, char *server)
+{
+    int32_t uri_length = strlen(c->uri);
+    if (strncmp(c->uri, "tcp://", 6) != 0)
+    {
+        LOG_E("Illegal uri, must start with tcp://, not support ipv6 & tsl");
+        return RT_FALSE;
+    }
+
+    const char *host_ptr = c->uri + 6;
+    char *port_ptr = strstr((const char *)host_ptr, ":");
+    if (!port_ptr)
+    {
+        LOG_E("Illegal mqtt uri, no server port");
+        return RT_FALSE;
+    }
+
+    int32_t host_length = port_ptr - host_ptr;
+    if (host_length <= 0)
+    {
+      return RT_FALSE;
+    }
+    memcpy(server, host_ptr, host_length);
+    return RT_TRUE;
+}
+
 /*********************************************************************************************************
 ** Function name:       paho_mqtt_thread
 ** Descriptions:        mqtt���������߳�
@@ -1090,26 +1117,35 @@ static void paho_mqtt_thread(void *param)
 
     struct netdev_ping_resp ping_resp;
     rt_memset(&ping_resp, 0, sizeof(struct netdev_ping_resp));
-__mqtt_start:
-
-  //check if server is accessable
-    while(1)
+    struct netdev *netdev = netdev_default;
+    char host[32] = {0};
+    if (RT_FALSE == mqtt_prase_server(c, host))
     {
-        extern int netdev_cmd_ping(char *target_name, char *netdev_name, rt_uint32_t times, rt_size_t size);
-        struct netdev *netdev = netdev_default;
-        if (netdev_is_up(netdev) && netdev_is_link_up(netdev) && (netdev->ops != RT_NULL ) && (netdev->ops->ping != RT_NULL))
-        {
-            rt_memset(&ping_resp, 0, sizeof(struct netdev_ping_resp));
-            int32_t ret = netdev->ops->ping(netdev, (const char *)c->uri, \
-                        32, 300, &ping_resp, RT_FALSE);
-            if (ret >= 0) {
-                LOG_I("MQTT server is access able");
-                break;
-            }
-
-        }
-        rt_thread_delay(2 * RT_TICK_PER_SECOND);
+      return;
     }
+__mqtt_start:
+  //check if server is accessable
+  LOG_I("wait for server connect");
+  do {
+      if (!netdev_is_link_up(netdev))
+      {
+        rt_thread_delay(3 * RT_TICK_PER_SECOND);
+        continue;
+      }
+
+      rt_memset(&ping_resp, 0, sizeof(struct netdev_ping_resp));
+      int32_t ret = netdev->ops->ping(netdev, (const char *)host, \
+                            32, RT_TICK_PER_SECOND, &ping_resp, RT_FALSE);
+      if (ret >= 0) 
+      {
+          LOG_I("server is accessable");
+          break;
+      }
+      else 
+      {
+          rt_thread_delay(3 * RT_TICK_PER_SECOND);
+      }
+  } while(1);
 
   if (c->connect_callback)
   {
